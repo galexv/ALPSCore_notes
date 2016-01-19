@@ -1,0 +1,46 @@
+\documentclass[12pt]{article}
+\usepackage[letterpaper,margin=0.5in]{geometry}
+\newcommand{\code}[1]{\texttt{#1}}
+\sloppy
+\begin{document}
+
+Method \code{result\_wrapper::extract<A>()}: what is \code{A}?
+
+It calls \code{arg->extract<A>()}, with \code{arg} is a shared pointer
+to \code{base\_wrapper<T>}, which actually holds a pointer to
+\code{derived\_result\_wrapper<T>}. Method
+\code{base\_wrapper<T>::extract<A>()} casts \code{*this} to
+\code{derived\_wrapper<A>\&} and calls its \code{extract()}.
+
+
+The
+\code{derived\_result\_wrapper<T>} is derived from
+\code{derived\_wrapper<T>}. The \code{derived\_wrapper<T>} is derived
+from \code{impl::DerivedWrapper<T,\$tag,*>} (where \code{*} denotes
+the lower level \code{impl::DerivedWrapper<T,\$tag,*>}), with the
+\code{detail::foundation\_wrapper<T>} at the lowest level. Method
+\code{derived\_wrapper<T>::extract()} returns a reference to \code{T},
+which is \code{this->m\_data}. By the way, \code{m\_data} \emph{has methods}
+like \code{print()}, \code{reset()} and \code{merge()} (so it is not a
+basic type).
+
+The \code{detail::foundation\_wrapper<T>} has a \code{m\_data} member
+of type \code{T}, and is derived from \code{base\_wrapper<V>}, where
+\code{V} is \code{value\_type<T>::type}. The type
+\code{value\_type<T>::type} is typedef-ed as \code{T::value\_type}.
+
+The \code{base\_wrapper<T>} is derived from
+\code{impl::BaseWrapper<T,\$tag,*>}, with
+\code{detail::value\_wrapper<T>} at the bottom of the hierarchy. The
+latter contains only a \code{typedef T value\_type}.
+
+The classes \code{impl::BaseWrapper<T,\$tag,B>} and
+\code{impl::DerivedWrapper<T,\$tag,B>} are defined in the
+corresponding feature files, for each \code{\$tag}. 
+
+So, \code{A} should at least have \code{A::value\_type}. Also, a cast
+from \code{base\_wrapper<T>} to \code{derived\_wrapper<A>} should exists. 
+
+
+
+\end{document}

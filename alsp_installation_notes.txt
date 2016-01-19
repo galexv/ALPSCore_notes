@@ -1,0 +1,58 @@
+Installing ALPS on Stampede.
+============================
+
+Suppose you are working at some "work directory". Let's refer to it as $mywork:
+
+$ cd ~/where/i/install/things
+$ mywork=$PWD
+
+Download Boost:
+
+$ wget -S 'http://downloads.sourceforge.net/project/boost/boost/1.48.0/boost_1_48_0.tar.bz2?r=http%3A%2F%2Fsourceforge.net%2Fprojects%2Fboost%2Ffiles%2Fboost%2F1.48.0%2F&ts=1435765441&use_mirror=iweb' -O boost_1_48_0.tar.bz2
+
+Unpack Boost and go to Boost directory:
+
+$ tar -xjf boost_1_48_0.tar.bz2 
+$ cd boost_1_48_0/tools/build/v2/
+
+Tell Boost that we want to have MPI library installed (unless the directive is already there):
+
+$ [ -f ~/user-config.jam ] && grep '^using mpi ;' ~/user-config.jam || echo 'using mpi ;' >>~/user-config.jam
+
+Bootstrap Boost:
+
+$ ./bootstrap.sh
+$ ./b2 install --prefix=$mywork/boost_1_48_0/000install_b2
+
+Install Boost in $mywork/boost_1_48_0.installed (this will take a while):
+
+$ cd $mywork/boost_1_48_0/
+$ ./000install_b2/bin/b2 toolset=intel-15.0.2 --prefix=$mywork/boost_1_48_0.installed install
+
+Meantime, one can download and unpack ALPS:
+
+$ cd $mywork
+$ wget http://alps.comp-phys.org/static/software/releases/alps-2.2.b4-src.tar.gz
+$ tar -xzf alps-2.2.b4-src.tar.gz
+$ cd alps-2.2.b4-src/ 
+$ ALPS_DIR=$PWD/install
+$ mkdir build && cd build
+
+Download a patch and patch ALPS to prevent it from searching for Python unnecessarily:
+
+$ wget https://gist.githubusercontent.com/galexv/811b1183019c7198d252/raw/eb2fc11a80347c83868fc8486eac92c77b8203aa/alps-patch.patch
+$ (cd ../alps/config; patch -b) <alps-patch.patch
+
+Install ALPS:
+
+$ module add hdf5 fftw3 cmake
+
+$ CC=$(which icc) CXX=$(which icpc) cmake ../alps -DBoost_NO_SYSTEM_PATHS=1 -DMKL_INCLUDE_DIR=$MKLROOT -DFFTW_INCLUDE_DIR=$TACC_FFTW3_INC -DFFTW_LIBRARIES=$TACC_FFTW3_LIB/libfftw3.a -DHDF5_ROOT=$TACC_HDF5_DIR -DCMAKE_INSTALL_PREFIX=$ALPS_DIR -DBOOST_ROOT=$mywork/boost_1_48_0.installed -DALPS_BUILD_PYTHON=OFF
+
+(get a bunch of warnings regarding libz.so.1 in /usr/lib64 being hidden by /opt/apps/zlib/1.2.8/x86_64/lib)
+
+$ nice make -j4
+
+$ make install
+
+
