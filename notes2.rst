@@ -1,3 +1,4 @@
+#############################
 Notes on ALPSCore development
 #############################
 
@@ -308,7 +309,7 @@ Accumulator|Result sets:
 Accumulator|Result wrappers (``accumulator_wrapper`` | ``result_wrapper``):
     * Contains a variant of ``shared_ptr< base_wrapper<T> >``, where ``T`` runs over all supported data types,
     * The pointer actually points to ``derived_accumulator_wrapper<A>`` | ``derived_result_wrapper<A>``.
-      `QUESTION:` where does it take its value from??
+      *QUESTION:* where does it take its value from??
     * Supports ``mean()``, ``error()`` methods, as well as arithmetic methods.
     * The method calls are forwarded via virtual methods of ``base_wrapper<T>``
       to the object actually held in the variant.
@@ -410,7 +411,7 @@ Adding serialization (save/load) capabilities.
 ==============================================
 
 The class has to implement several concepts (the info is taken from
-[https://alps.comp-phys.org/trac/wiki/NGSHDF5#Non-IntrusiveSerialization]
+https://alps.comp-phys.org/trac/wiki/NGSHDF5#Non-IntrusiveSerialization 
 and from looking at ALPSCore code). The following template specializations must be defined for the type T (in ``alps::hdf5`` namespace):
 
     * Metafunction ``scalar_type<T>`` 
@@ -605,7 +606,7 @@ attribute and the type of the data entity (using ``bool
 hdf5::archive::is_datatype<T>(string path)``) and decide whether the
 data is loadable.
 
-Because it appears to be perfectly fine to read my custom type into a
+Because it (falsely) appears to be perfectly fine to read my custom type into a
 vector of any type, load attempts for accumulators should begin with
 the custom type and only then try regular types.
 
@@ -636,6 +637,75 @@ I want something like this: ``cout << fullprint(acc)``. That is,
 ``fullprint(acc)`` should return something which is printable: e.g.,
 ``detail::accumulator_print_proxy``. Possible, but impractical for
 now.
+
+Even now there is an output operator in ``max_num_binning.hpp`` that
+streams out the bins using ``detail::max_num_binning_proxy<C, M>`` (with ``C``
+being the type for number of elements, ``vector<M>`` being the type of
+the vector of bins). Meta-function ``max_num_binning_type<T>`` returns
+the type with C=``count_type<T>::type``,
+M=``mean_type<T>::type``. This type is returned by method
+``Accumulator<T, max_num_binning_tag, B>::max_num_binning()``, which is
+called by ``fullprint()`` method.
+
+Okay. So, we want to be able to say ``cout << res.shortprint()`` or
+``cout << res.fullprint()`` (and, probably, prohibit the direct
+printing of the results --- at least for now). Obviously,
+``shortprint()`` and ``fullprint()`` should return an object ``x`` of a 
+streamable/printable type, let's call it ``print_proxy<A>``. I see
+the following options:
+
+* The type is ``std::string``. Simplest, although presumably not the
+  cheapest. I do not see any other drawbacks, and i do not believe that
+  printing is performance-critical in our applications. 
+
+* The object ``x`` should hold a const-reference to ``T`` and
+  should have an out-stream operator calling ``T::print()``; the
+  ``print()`` should also be parametrized. This is easy to break
+  (e.g., by passing ``x`` out of scope of the object being
+  printed), but cheap, convenient enough, and will break rarely (but
+  loudly). 
+
+* The object ``x`` is out-streamable and contains the copy of the info
+  to be printed, such as mean, errorbar and the vector of bins. I do not
+  see many advantages: it may presumably be cheaper than just
+  returning a string (not necessarily so: the (shortened) string representation of
+  a long vector is certainly smaller than the vector itself!), and it
+  is additional coding for every new type of printing anyway.
+
+Maybe ``shortprint()`` and ``fullprint()`` are then not good names:
+they should rather be methods than free functions (arguable) and they
+are more like ``to_short_string()`` and ``to_long_string()``. In other
+words, it is a method ``std::string to_string(bool terse=true)``.
+
+Side note: according to `Scott Meyers
+<http://www.drdobbs.com/cpp/how-non-member-functions-improve-encapsu/184401197>`_,
+the functions that access only public class members should better be
+made friends than members --- from the point of view of
+encapsulation. However, this string conversion might access private
+data and has to be virtual --- so, we are making it a member
+functions. 
+
+On the other hand, conversion to string will be mostly done with the
+sole intention of printing. So, instead of ``to_string(bool terse)``
+it is better to have ``print(ostream& s, bool terse=false)``. Then
+printing will be done as before, calling ``print(stream,false)`` (or,
+in the future, will use the flags of the stream to decide terseness), and
+``to_string(bool terse=true)`` will be calling
+``print(strstream,true)``. 
+
+For the reason of uniformity of the interfaces, both ``print()`` and
+``to_string()`` should be defined in ``accumulator_wrapper``,
+``result_wrapper``, as well as in individual ``Accumulator<...>`` and
+``Result<...>`` classes (and therefore in 
+
+Yet another thought: we do not need ``to_string()`` for now. And it is
+enough to define ``detail::printable_type short_print()`` as a free
+function overloads, which can take ``accumulator_wrapper`` or
+``result_wrapper`` and return some implementation-defined printable
+object (``std::string`` for now, possibly some proxy object in
+future). 
+
+**Works for now.**
 
 
 Merging accumulators.
@@ -687,5 +757,253 @@ Next problem: Half-finished merge of ``max_num_binning`` accumulator,
 which does nothing except calling the merge of its base class (which
 is ``binning_analysis`` accumulator), passes the test. We need a better
 merge test!
+
+
+Getting rid of ``boost::mpi``
+=============================
+
+First, all occurrences of ``alps::mpi`` are renamed to
+``alps::alps_mpi``. Then all occurrences of ``boost::mpi`` are renamed
+to ``alps::mpi``. It seems like most non-trivial
+``boost::mpi::reduce()`` invocations are already taken care of, with 2
+exceptions which were converted similar to existing instances, into
+direct calls to ``MPI_Reduce()`` (this part has been already done
+once, during MPI debugging, so i just lifted the code from
+there). What is left are:
+
+* Interface with ``MPI_Op``
+* Implementation of ``all_reduce()`` (possibly can be emulated,
+  temporarily, by ``reduce()`` followed by ``broadcast()``)
+* Implementation of ``all_gather()``
+* Broadcast of non-trivial object (``params``, in our case)
+
+Long story short, it seems to work, as of 2/16/2015. Some "FIXME"s are
+to be fixed:
+
+* ``all_reduce()`` is implemented as ``reduce()`` followed by
+  broadcast. We need to do it properly, which require generalization
+  of serialization.
+* ``reduce()`` function is in ``alps::alps_mpi`` --- it should be
+  moved to ``alps::mpi``.
+* Generally, we do not have to follow ``boost::mpi`` interface,
+  especially considered it is implemented only partially!
+
+
+Python interface.
+=================
+
+The python code is a separate library now. It needs access to the ALPS
+code, and also it may use some ALPSCore CMake scripts. (?)
+
+The "legacy" code needs ``boost::python``. I would like the new code
+to work without it --- if it's practical.
+
+The task of the python library is:
+
+1. Make ALPSCore callable from Python; for example, call MC simulation
+   or save/load some data to/from HDF5 files in ALPSCore format.
+2. Possibly, make Python callable from ALPSCore. For example, provide
+   MC update and measurement functions written in Python.
+3. Construct ALPSCore objects from Python data: for example, generate
+   an ``alps::params`` object from Python ``dict``.
+4. Construct Python objects from ALPSCore data: for example, extract
+   mean and error bar from ALPSCore accumulator.
+
+What interfaces are seemed to be provided as of now?
+
+1. Interface to HDF5 archive.
+   Writing and reading Python and NumPy data, creating groups.
+   (File ``src/pyhdf5.cpp``, module ``pyhdf5_c``). The only one that
+   has some tests.
+2. Interface to MC simulation. 
+3. Interface to ALPSCore RNG, with saving and loading.
+4. Interface to MC API (what is it for?)
+
+Also, half-finished interface to construct parameters from dictionary.
+
+It makes sense to build interface to parameters (which will likely not
+use ``boost::python``) and other interfaces separately. That means it may
+be better to build them all separately (they probably do not depend on
+each other in the first place). Each module in its own directory?
+
+As of now, the interface to parameters does not create any modules
+(might do so in future, though), but provides some headers. It is
+supposed to be called from C++, from inside a C++-implemented python module. 
+
+The other interfaces, which are C++-implemented python modules, do not
+provide any headers for general use (but create modules, naturally).
+
+There is no need to put non-exported header files in ``include/``
+directories: they can be in the same directories as their sources.
+
+On the other hand: it is better to have at least exported header to be
+fully qualified (``<alps/python/some_mod/some_file.hpp>`` or
+``<alps/python/some_mod.hpp``>) when installed and used by other
+packages, to avoid name clashes. Because the same headers are often
+used not-yet-installed by "sibling" modules, the headers are better be
+in the fully-qualified directories from the beginning. Moreover, a
+header may migrate from being "internal"/unexported to
+external/exported --- do we really want to change all references to
+it? So, let's just not install unexported/"internal" headers, but let
+them reside at the same directories? On the other hand, we may very
+well want to know that certain header is used internally only, without
+examining the ``CMakeLists``. So, let's have unexported headers in the
+source directories, and exported headers and fully-qualified
+directories. In other words, the headers which are used *only* by
+sources and *not* by exported headers can reside in source directories.
+
+Unit testing works. Interface with archive mostly works. The use of
+interfaces to MC and MC API is not clear to me. 
+
+Interface to ``alps::params``
+-----------------------------
+
+For this all we need is to convert a Python dictionary to an STL
+map. Also, Python list-like objects must be converted to STL vectors
+(recursively?). For primitive types and strings, ``boost::variant`` is
+a good container. For lists, should it be a vector of variants or a
+variant that includes a vector? I think, the former (otherwise, how
+can we implement recursive structures?). On the other hand, the
+consumer of these data (``alps::params``) does not care about lists of lists or lists of
+multitype elements; so, let's stick with variant of scalars and vectors.
+
+We may need "wrapped python object" to not bother about manual reference
+counting.
+
+Another problem: what looked like functions from ``Python.h`` turned
+out to be macros; so, ``PyObject`` -to-C conversion had to be
+redesigned to wrap the macros into "callable" classes (which also may
+have improved performance, by inlining those macros). 
+
+I wrote C++ code (not using Boost) and Python script to test the
+pyobject conversion; but now we need a way to declare a python module
+code that does not need Boost. 
+
+While writing a test for the interface, i ran into the following...
+
+Problem: We now have the C++ source and header implementing the
+interface. What form of the distribution are we to use? In other
+words, how is the user of the library to find it?
+
+A possible answer is that it is installed as a shared object in the
+same (or similar) directories as ALPSCore, and is found the same way
+--- via CMake package mechanism. Is it how a Python module writer
+expects it to be found? Why not --- it is how she finds ALPSCore
+itself.
+
+
+CMake improvements.
+===================
+
+Static vs Dynamic builds
+------------------------
+
+"We generate static libraries" is a different statement from "we link
+everything statically". We can introduce:
+
+* ``ALPS_BUILD_SHARED``: makes ALPSCore produce shared libraries by
+  setting ``BUILD_SHARED_LIBS`` to ``ON`` in cache. Mutually exclusive
+  with ``ALPS_BUILD_STATIC``.
+* ``ALPS_BUILD_STATIC``: makes ALPSCore produce static libraries by
+  setting ``BUILD_SHARED_LIBS`` to ``OFF`` in cache, and requesting
+  static versions of Boost and HDF5. Mutually exclusive
+  with ``ALPS_BUILD_SHARED``.
+* If both ``ALPS_BUILD_SHARED`` and ``ALPS_BUILD_STATIC`` are set to
+  ``OFF``, then no special request is done when requesting packages,
+  and the libraries are generated as specified by
+  ``BUILD_SHARED_LIBS``.
+* A separate option ``ALPS_BUILD_PIC``, if ``ON``, requests building
+  PIC code.
+
+Bug fixing.
+===========
+
+Issue 198: occasional crashes on collecting results.
+----------------------------------------------------
+
+See `the issue #198
+<https://github.com/ALPSCore/ALPSCore/issues/198>`_ on GitHub:
+sometimes two processes generate different amount of data and th eMPI
+merge (collecting the results, reducing over MPI) fails. The problem
+boils down to the fact that ``alps::hdf5::is_vectorizable()`` returns
+``false`` for non-rectangular arrays. The most straightforward
+solution is to "rectangularize" the arrays before reducing. However,
+there may be a few more catches.
+
+Does ``reduce()`` exhibit the expected behavior? Let's define that the
+matrix is a vector of rows, each row is a vector of columns (so that the
+addressing is natural, ``mtx[row][col]``). Our particular matrix is a
+collection of bins; that is, the number of rows is the number of bins,
+and each row contains a vector value that forms the columns.
+
+* Reducing 2 matrices of the same size: works as expected.
+* Reducing 2 matrices with the same number of rows, different number
+  of non-empty columns: failed at MPI level ("message truncated"). It is an
+  unlikely situation in our case, because all vector data is supposed
+  to have the same vector size.
+* Reducing 2 matrices with the same number of columns, different number
+  of non-empty rows (that is, 2 data sets with different number of
+  bins): failed at MPI level ("message truncated").
+* Reducing a matrix having rows of a different size: failed because
+  the matrix is not rectangular.
+
+What is the reason for the original failure? Different number of bins
+in different chains. The number of bins is made the same before
+reduction (by finding the max number of bins across all chains, then
+applying ``resize()`` to the vector of bins). However, the vector
+length of each bin is NOT made the same: ``resize()`` creates 0-size
+rows. (See ``binning_analysis.hpp:355``). 
+
+Issue 210: Binary op between Results of different kind
+------------------------------------------------------
+
+Attempt to do this:::
+    using namespace alps::accumulators;
+    accumulator_set aset;
+    // Different accumulators!
+    aset << NoBinningAccumulator<double>("left")
+         << MeanAccumulator<double>("right");
+    aset["left"] << 1.;
+    aset["left"] << 1.;
+    
+    aset["right"] << 1.;
+    aset["right"] << 1.;
+
+    result_set rset(aset);
+    const result_wrapper& left=rset["left"];
+    const result_wrapper& right=rset["right"];
+
+    result_wrapper r=left+right; // Exception here!!
+    double xmean=r.mean<double>();
+
+results in ``bad_cast`` exception. The location of the exception is
+``base_wrapper<T>::extract<A>()``, and is likely related to the fact
+that ``SomeWrapper<Base>`` and ``SomeWrapper<Derived>`` are not
+related even if ``Base`` and ``Derived`` are.
+
+Can we work around this? For example, can we extract the corresponding
+"raw" ``Result`` from the ``result_wrapper``, and then cast it to the
+most-derived common superclass? Possible: ``A&
+result_wrapper::extract<A>()`` is for that, see above. Then, how to
+wrap the raw ``Result`` back to the ``result_wrapper``? Possible:
+``result_wrapper`` can be constructed from the raw result. This scheme
+seems to work!
+
+So, how can we do it? We need to cast the result to a different named
+accumulator, like ``cast<FROM,TO>()``. Something like this:::
+    aset << MeanAccumulator<double>("left") 
+         << NoBinningAccumulator<double>("right");
+    // ...
+    result_set rset(aset);
+    const result_wrapper& right=
+      rset["right"].cast<NoBinningAccumulator<double>,MeanAccumulator<double>>();
+    const result_wrapper& right=
+      rset["right"].cast<NoBinningAccumulator<double>,MeanAccumulator<double>>()
+   
+It is inconvenient in that we have to remember what accumulator type
+is being held in the wrapper, but may be an acceptable workaround.
+
+    
+
 
 
