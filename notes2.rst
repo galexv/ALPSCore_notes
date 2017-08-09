@@ -294,6 +294,8 @@ Named accumulators: ``FullBinningAccumulator<double>``.
       corresponding "raw accumulator".
     * Contains a type ``result_type`` which is a type of the
       corresponding "raw result".
+    * Operator ``<<`` calls ``(*wrapper) <<``, that is, calls ``<<``
+      on the containing ``accumulator_wrapper``.
 
 The mapping between the "named" accumulators and "raw" accumulators'
 feature tags::
@@ -310,9 +312,12 @@ Accumulator|Result wrappers (``accumulator_wrapper`` | ``result_wrapper``):
     * Contains a variant of ``shared_ptr< base_wrapper<T> >``, where ``T`` runs over all supported data types,
     * The pointer actually points to ``derived_accumulator_wrapper<A>`` | ``derived_result_wrapper<A>``.
       *QUESTION:* where does it take its value from??
-    * Supports ``mean()``, ``error()`` methods, as well as arithmetic methods.
-    * The method calls are forwarded via virtual methods of ``base_wrapper<T>``
-      to the object actually held in the variant.
+    * Supports ``mean()``, ``error()`` methods, as well as arithmetic
+      methods.
+    * Operator ``<<`` calls ``operator()``.
+    * The method calls (including ``operator()``) are forwarded via
+      virtual methods of ``base_wrapper<T>`` to the object actually
+      held in the variant.
     * Supports method ``A& extract<A>()`` returning underlying raw accumulator|result ``A``.
     * There are free functions ``extract<A>()``.
 
@@ -914,6 +919,140 @@ everything statically". We can introduce:
   ``BUILD_SHARED_LIBS``.
 * A separate option ``ALPS_BUILD_PIC``, if ``ON``, requests building
   PIC code.
+
+
+alps::params improvements.
+==========================
+
+Detection of undefined parameters.
+----------------------------------
+
+See issues `#124 <https://github.com/ALPSCore/ALPSCore/issues/124>`_
+and `#195 <https://github.com/ALPSCore/ALPSCore/issues/195>`_ on
+GitHub. How to report the undefined parameters better?
+
+As we now have an iterator for this purpose, let's make a function
+which prints out all undefined parameter names. (Done!)
+
+
+Disappearing ini-file problem (issue #248)
+------------------------------------------
+
+Currently, the INI file (and the command line) is re-read and
+re-parsed on the first parameter access that happened after a call
+that invalidates the cached state (most often, ``define<>()``). This
+results in an unexpected behavior if the file "disappeared" meantime
+(e.g., was removed, or current directory was changed, or it's a slave
+MPI process trying to use a broadcast-constructed parameters object). 
+
+The correct/expected broadcast semantics is to be dealt with together
+with serialization.
+
+For now, let us "suck in" the content of the INI file, in the form of
+a long string formed by joining a vector of strings from "unregistered
+options" list. As a side-effect, it will initiate a pre-parsing of the
+INI file at parameter object construction. When re-parsing the INI
+file, instead of reading the file stream, read the string as a string
+stream.
+
+In more details: If it is a valid HDF5 file, it should not be parsed as
+INI. If ``hdf5path`` is NULL, it should not be loaded. This effectively
+ignores a valid HDF5 file if the caller of the constructor does not
+know the path in the HDF5.
+
+Test needed: can we define new parameters if the file is loaded from
+archive? Subtests: newly-defined parameters residing in the file, in
+the "old" command line, in the "new" command line. This situation is
+different from when parameters are "defined" before the archiving, but
+re-assigned via the command line.
+
+
+The command-line parameters that were not ``define()``d are archived,
+but are cleared by command-line constructor. The command line is
+primarily for overriding the INI file arguments, not for setting the
+arguments from scratch.
+
+Serialization of parameters
+---------------------------
+
+Test needed: serialize object with implicitly-defined (explicitly
+assigned) parameters, flag parameters present, flag parameters absent,
+existing but missing parameters.
+
+Test needed: serialize if there is already a group, data or attribute
+with the name? 
+
+
+Boost libraries removal
+=======================
+
+Libraries are:
+ * filesystem
+ * chrono
+ * system
+ * program_options
+
+Removing ``filesystem`` first.  (In the following, ``namespace
+fs=boost::filesystem`` is implied for brevity).
+
+Unused functions in ``utilities/src/os.cpp``, the file is removed.
+
+Other places:
+``filename_operations.cpp``:
+
+remove_extensions()
+get_basename()
+get_dirname()
+
+gtest_par_xml_output.cpp: to find the file extension.
+
+archive.cpp:
+
+fs::exists() -- in most cases is not needed or can be avoided.
+fs::copy_file()
+fs::remove() -- has usual C semantics of std::remove
+fs::rename() -- has usual C semantics of std::rename
+
+Argument to ``hdf5::archive`` constructor and other methods; functions
+that use archive often also use ``boost::filesystem::path``.
+
+Some tests, mostly ``fs::remove()`` and ``fs::is_regular_file()`` with
+``fs::exists()``. Both, i believe, are useless.
+
+In ``utilities/cast.hpp`` there are conversion templates from
+``fs::path``.
+
+Let's keep things in ``alps::filesystem``.
+
+Do we have to check for errors and how?
+Sometimes yes, sometimes no. Probably, in the end we have to use our own
+wrappers, with additional argument specifying whether we are
+interested in error reporting.
+
+
+
+Custom scheduler (issue #222)
+=============================
+
+The ``Schedule_Checker`` concept should have the following:
+
+* Constructor (with ``T_min`` and ``T_max`` parameters?)
+* ``bool pending()`` : returns ``true`` if a completion checking is due.
+* ``void update(double fraction)`` : informs the schedule checker
+  about the actual fraction completed.
+
+What about ``stop_callback()``? It is of type ``boost::function<bool
+()>`` (that is, compatible with ``bool stop_callback()``). It is
+called during the run cycle and if returns ``true`` the simulation
+must be stopped "early" (based, e.g., on elapsed time and/or raised
+signals).  By the way, the default implementation of
+``stop_callback()`` is collective.
+
+In the simplest case, ``bool stop_callback()`` may return false. 
+
+The ``Schedule_Checker`` concept is a template parameter for the
+``alps::mcmpiadapter`` class. 
+
 
 Bug fixing.
 ===========
